@@ -4,18 +4,241 @@ import time
 import requests  # 新增：用于调用接口
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QTextEdit,
     QPushButton, QSpinBox, QFileDialog, QHBoxLayout,
     QVBoxLayout, QGroupBox, QFormLayout, QCheckBox,
     QListWidget, QListWidgetItem, QProgressBar, QMessageBox,
-    QLineEdit, QStyle, QProxyStyle
+    QLineEdit, QStyle, QProxyStyle, QLabel
 )
-from PyQt5.QtGui import QPalette, QColor, QFont, QPainter, QPen
+from PyQt5.QtGui import QPalette, QColor, QFont, QPainter, QPen, QBrush, QLinearGradient
+import math  # 动态背景：用于计算渐变的平滑变化
 
-# 主题配置：'dark' 使用深色科技蓝主题，'light' 使用浅色科技蓝主题
-THEME_MODE = "dark"   # 改成 "light" 就能切换为浅色主题
+
+# ===== 统一 QSS 样式构建函数（只保留深色科技蓝主题） =====
+def build_common_qss() -> str:
+    """
+    深色科技蓝主题 QSS（统一圆角 + 半透明）：
+    - 所有主要“方框”（GroupBox / 输入框 / 按钮 / 进度条等）都采用圆角+半透明
+    - 内部区域尽量透出青蓝背景，整体更统一
+    """
+    return """
+    QWidget {
+        background-color: #0b1120;
+        color: #e5f2ff;
+        font-family: “Futura”，"Microsoft YaHei";
+        font-size: 11pt;
+    }
+
+    QMainWindow {
+        background-color: #020617;
+    }
+
+        /* 通用标签：帧数/随机种子/保存路径 等文字也有半透明圆角底 */
+    QLabel {
+        background-color: rgba(0, 0, 0, 10);  /* 半透明黑，贴近背景 */
+        border-radius: 6px;
+        padding: 2px 6px;
+    }
+
+
+    /* ========== 卡片外框：通透 HUD ========== */
+    QGroupBox {
+        background-color: rgba(5, 10, 24, 80);       /* 半透明，靠近主背景 */
+        border: 1px solid rgba(56, 189, 248, 70);    /* 略带蓝色光边 */
+        border-radius: 18px;                         /* 更圆的圆角 */
+        margin-top: 18px;
+        padding: 12px 12px 14px 12px;
+    }
+
+    QGroupBox::title {
+        subcontrol-origin: margin;
+        left: 14px;
+        padding: 0 8px;
+        color: #f9fafb;
+        font-weight: 700;
+        font-size: 12pt;
+        letter-spacing: 1px;
+        font-family: "Futura"，"Microsoft YaHei";
+    }
+
+    QGroupBox:hover {
+        border-color: #38bdf8;
+    }
+
+    /* ========== 按钮（含开始生成） ========== */
+    QPushButton {
+        border: 1px solid #38bdf8;
+        border-radius: 10px;
+        padding: 6px 16px;
+        background-color: rgba(15, 23, 42, 140);   /* 半透明 */
+        font-size: 10pt;
+        font-weight: 500;
+    }
+
+    QPushButton:hover {
+        background-color: rgba(30, 41, 59, 190);
+    }
+
+    QPushButton:pressed {
+        background-color: #0ea5e9;
+    }
+
+    QPushButton:disabled {
+        border-color: #475569;
+        color: #64748b;
+        background-color: rgba(15, 23, 42, 100);
+    }
+
+    QPushButton#PrimaryButton {
+        background-color: #0ea5e9;
+        border: 1px solid #38bdf8;
+        color: #0f172a;
+    }
+
+    QPushButton#PrimaryButton:hover {
+        background-color: #06b6d4;
+    }
+
+    QPushButton#PrimaryButton:pressed {
+        background-color: #0891b2;
+    }
+
+    /* ========== 输入框 / 数字框：圆角 + 半透明 ========== */
+    QLineEdit,
+    QSpinBox {
+        background-color: rgba(11, 17, 32, 120);
+        border: 1px solid #1e293b;
+        border-radius: 10px;
+        padding: 4px 6px;
+        font-size: 10pt;
+    }
+
+    QLineEdit:focus,
+    QSpinBox:focus {
+        border: 1px solid #38bdf8;
+    }
+
+        /* 随机种子复选框：也给一个半透明圆角底 */
+    QCheckBox {
+        background-color: rgba(3, 15, 28, 90);
+        border-radius: 10px;
+        padding: 2px 8px;
+    }
+
+
+    /* ========== 文本区域 / 列表：轻薄背景 + 圆角 ========== */
+    QTextEdit,
+    QListWidget {
+        background-color: rgba(3, 15, 28, 80);   /* 略带一点雾玻璃感 */
+        border: 1px solid rgba(15, 23, 42, 120);
+        border-radius: 14px;
+        padding: 4px;
+    }
+
+    QListWidget::item {
+        padding: 4px 6px;
+    }
+
+    QListWidget::item:hover {
+        background-color: rgba(15, 23, 42, 200);
+    }
+
+    QListWidget::item:selected {
+        background-color: #38bdf8;
+        color: #020617;
+    }
+
+    /* 专门给日志和历史列表再柔一点（但仍保留圆角） */
+    QTextEdit#LogText,
+    QListWidget#HistoryList {
+        background-color: rgba(3, 15, 28, 70);
+        border-radius: 14px;
+        border: 1px solid rgba(15, 23, 42, 100);
+        font-family: "Consolas", "Cascadia Code", "Courier New";
+        font-size: 9pt;
+        padding: 4px;
+    }
+
+    /* ========== 进度条：圆角能量条 ========== */
+    QProgressBar {
+        background-color: rgba(2, 6, 23, 110);
+        border: 1px solid #1e293b;
+        border-radius: 12px;
+        text-align: center;
+        padding: 2px;
+    }
+
+    QProgressBar::chunk {
+        border-radius: 10px;
+        background-color: qlineargradient(
+            spread:pad, x1:0, y1:0, x2:1, y2:0,
+            stop:0 #0ea5e9,
+            stop:1 #22c55e
+        );
+    }
+
+    /* ========== 滚动条 ========== */
+    QScrollBar:vertical {
+        background: transparent;
+        width: 10px;
+        margin: 2px 0 2px 0;
+    }
+    QScrollBar::handle:vertical {
+        background: rgba(51, 65, 85, 140);
+        border-radius: 5px;
+    }
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {
+        height: 0;
+    }
+
+    QScrollBar:horizontal {
+        background: transparent;
+        height: 10px;
+        margin: 0 2px 0 2px;
+    }
+    QScrollBar::handle:horizontal {
+        background: rgba(51, 65, 85, 140);
+        border-radius: 5px;
+    }
+    QScrollBar::add-line:horizontal,
+    QScrollBar::sub-line:horizontal {
+        width: 0;
+    }
+
+    /* ========== 弹窗 & 顶部标题 & 状态徽章 ========== */
+    QMessageBox {
+        background-color: #020617;
+    }
+
+    QMessageBox QLabel {
+        color: #e5f2ff;
+    }
+
+    QLabel#TitleLabel {
+        font-size: 14pt;
+        font-weight: 700;
+        letter-spacing: 3px;
+        font-family: "Futura"，"Microsoft YaHei";
+        background-color: rgba(0, 0, 0, 0);  /* 顶部标题条的半透明底 */
+        border-radius: 6px;
+        padding: 4px 10px;
+    }
+
+
+    QLabel#StatusBadge {
+        padding: 2px 10px;
+        border-radius: 999px;
+        background-color: #064e3b;
+        color: #bbf7d0;
+        font-size: 9pt;
+        font-family: "Futura"，"Microsoft YaHei";
+    }
+    """
+
+
 
 
 #Config
@@ -181,6 +404,72 @@ class CheckBoxBorderStyle(QProxyStyle):
         else:
             super().drawPrimitive(element, option, painter, widget)
 
+class AnimatedBackgroundWidget(QWidget):
+    """
+    动态背景容器：
+    - 使用渐变 + 轻微呼吸动画 + 网格线，增强科技感
+    - 作为 central widget，内部再放现有的 layout 和控件
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._phase = 0.0  # 动画相位
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+        self._timer.start(50)  # 每 50ms 刷新一次，大约 20fps
+
+        # 不调用父类的样式背景绘制，由我们自己画
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+
+    def _on_tick(self):
+        # 相位在 0~360 之间循环
+        self._phase = (self._phase + 1.5) % 360.0
+        self.update()  # 触发重绘
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = self.rect()
+
+        # 青蓝色渐变背景（更亮、更偏青）
+        base1 = QColor("#022c3a")  # 深青蓝（左侧/上侧）
+        base2 = QColor("#0ea5e9")  # 亮青蓝（右侧/下侧）
+        accent = QColor("#22d3ee")  # 高亮青蓝，用于中间的发光带和网格
+
+        # 使用正弦函数做一个 0~1 的平滑因子，用来控制高亮强度
+        t = (math.sin(math.radians(self._phase)) + 1.0) / 2.0  # 0 ~ 1
+
+        # 渐变背景
+        grad = QLinearGradient(0, 0, rect.width(), rect.height())
+        grad.setColorAt(0.0, base1)
+        # 中间的高亮带，透明度随 t 轻微变化
+        accent_color = QColor(accent)
+        accent_color.setAlphaF(0.20 + 0.25 * t)  # 0.20 ~ 0.45
+        grad.setColorAt(0.5, accent_color)
+        grad.setColorAt(1.0, base2)
+
+        painter.fillRect(rect, QBrush(grad))
+
+        # 叠加一层很淡的网格线，增加科技感（像 HUD）
+        grid_color = QColor(accent)
+        grid_color.setAlpha(35)  # 非常淡
+        pen = QPen(grid_color)
+        pen.setWidth(1)
+        painter.setPen(pen)
+
+        step = 80  # 网格间距
+        # 竖线
+        x = 0
+        while x < rect.width():
+            painter.drawLine(x, 0, x, rect.height())
+            x += step
+        # 横线
+        y = 0
+        while y < rect.height():
+            painter.drawLine(0, y, rect.width(), y)
+            y += step
+
+        # 不调用 super().paintEvent(event)，防止 QSS 再次覆盖背景
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -192,12 +481,38 @@ class MainWindow(QMainWindow):
         self._init_ui()
 
     def _init_ui(self):
-        central = QWidget()
+        # 使用带动态渐变背景的容器作为 central widget
+        central = AnimatedBackgroundWidget(self)  # 动态背景
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+
+        # ===== 美化修改：外层使用垂直布局，上方放标题栏，下方放左右分栏 =====
+        root_layout = QVBoxLayout(central)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(12)
+
+        # ---------- 顶部标题栏 ----------
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+        root_layout.addLayout(header_layout)
+
+        self.title_label = QLabel("INTERGEN MOTION CLIENT")
+        self.title_label.setObjectName("TitleLabel")  # 绑定 QSS 样式
+        header_layout.addWidget(self.title_label)
+
+        header_layout.addStretch()
+
+        self.status_label = QLabel("API: 未检测")
+        self.status_label.setObjectName("StatusBadge")  # 绑定 QSS 样式
+        header_layout.addWidget(self.status_label)
+
+        # ---------- 主体左右分栏 ----------
+        main_layout = QHBoxLayout()
+        main_layout.setSpacing(12)
+        root_layout.addLayout(main_layout)
 
         # 左侧布局
         left_layout = QVBoxLayout()
+        left_layout.setSpacing(12)  # 左侧内部控件间距
         main_layout.addLayout(left_layout, 2)
 
         # 1. 文本描述
@@ -205,7 +520,7 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(prompt_group)
         prompt_layout = QVBoxLayout(prompt_group)
         self.prompt_edit = QTextEdit()
-        self.prompt_edit.setPlaceholderText("例如：两个人正在跳舞/Two people are boxing.（支持多国语言输入）")
+        self.prompt_edit.setPlaceholderText("例如：两个人正在跳舞/Two people are boxing.（支持不同语言输入）")
         prompt_layout.addWidget(self.prompt_edit)
 
         # 2. 生成参数
@@ -251,7 +566,8 @@ class MainWindow(QMainWindow):
         btn_layout = QHBoxLayout()
         left_layout.addLayout(btn_layout)
 
-        self.generate_btn = QPushButton("开始生成") # 改名
+        self.generate_btn = QPushButton("开始生成")
+        self.generate_btn.setObjectName("PrimaryButton")  # 美化：设为主按钮样式
         self.generate_btn.clicked.connect(self._on_generate_clicked)
         btn_layout.addWidget(self.generate_btn)
 
@@ -263,19 +579,11 @@ class MainWindow(QMainWindow):
         open_dir_btn = QPushButton("打开文件夹")
         open_dir_btn.clicked.connect(self._open_output_dir)
         btn_layout.addWidget(open_dir_btn)
-        # 主题切换按钮
-        self.theme_btn = QPushButton()
-        # 根据当前全局 THEME_MODE 设置按钮文字
-        if THEME_MODE == "dark":
-            self.theme_btn.setText("切换为浅色主题")
-        else:
-            self.theme_btn.setText("切换为深色主题")
 
-        self.theme_btn.clicked.connect(self._toggle_theme)
-        btn_layout.addWidget(self.theme_btn)
 
         # 右侧布局
         right_layout = QVBoxLayout()
+        right_layout.setSpacing(12)  # ===== 右侧内部控件间距 =====
         main_layout.addLayout(right_layout, 3)
 
         # 结果列表
@@ -283,6 +591,7 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(result_group, 3)
         result_layout = QVBoxLayout(result_group)
         self.result_list = QListWidget()
+        self.result_list.setObjectName("HistoryList")  # 美化：统一历史列表样式
         self.result_list.itemDoubleClicked.connect(self._on_result_double_clicked)
         result_layout.addWidget(self.result_list)
 
@@ -299,6 +608,7 @@ class MainWindow(QMainWindow):
         log_layout = QVBoxLayout(log_group)
         self.log_edit = QTextEdit()
         self.log_edit.setReadOnly(True)
+        self.log_edit.setObjectName("LogText")  # 美化：统一日志区域样式
         log_layout.addWidget(self.log_edit)
 
     # ---------- 逻辑部分 ----------
@@ -334,6 +644,8 @@ class MainWindow(QMainWindow):
         self.generate_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.progress_bar.setValue(0)
+        if hasattr(self, "status_label"):
+            self.status_label.setText("API: 请求中...")
 
         # 启动线程
         self.worker = GenerationWorker(prompt, params)
@@ -369,29 +681,6 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.warning(self, "错误", str(e))
 
-    def _toggle_theme(self):
-        """切换深色 / 浅色主题，并立即应用到整个应用。"""
-        from PyQt5.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is None:
-            return
-
-        global THEME_MODE
-
-        if THEME_MODE == "dark":
-            # 切到浅色
-            THEME_MODE = "light"
-            apply_light_tech_theme(app)
-            self.theme_btn.setText("切换为深色主题")
-            self._log("已切换为浅色科技蓝主题")
-        else:
-            # 切到深色
-            THEME_MODE = "dark"
-            apply_dark_tech_theme(app)
-            self.theme_btn.setText("切换为浅色主题")
-            self._log("已切换为深色科技蓝主题")
-
-
     def _play_video_in_widget(self, file_path: str):
         abs_path = os.path.abspath(file_path)
         self._log(f"播放: {abs_path}")
@@ -417,6 +706,8 @@ class MainWindow(QMainWindow):
 
     def _on_generation_finished(self, output_path: str, params: dict):
         self._log(f"保存成功: {output_path}")
+        if hasattr(self, "status_label"):
+            self.status_label.setText("API: 正常")
         item_text = f"[{datetime.now().strftime('%H:%M:%S')}] {os.path.basename(output_path)}"
         item = QListWidgetItem(item_text)
         item.setToolTip(output_path)
@@ -431,7 +722,12 @@ class MainWindow(QMainWindow):
 
     def _on_generation_error(self, message: str):
         self._log(f"错误: {message}")
+        if hasattr(self, "status_label"):
+            self.status_label.setText("API: 错误")
         QMessageBox.critical(self, "生成失败", message)
+        if hasattr(self, "status_label") and "错误" not in self.status_label.text():
+            # 如果不是错误状态，则标记为空闲/待命
+            self.status_label.setText("API: 待命")
 
     def _on_worker_finished(self):
         self.generate_btn.setEnabled(True)
@@ -446,11 +742,11 @@ class MainWindow(QMainWindow):
             self.log_edit.verticalScrollBar().setValue(self.log_edit.verticalScrollBar().maximum())
         print(text)
 
-# --------------------- 主题 (保留) -------------------------
+# --------------------- 主题 (保留 + QSS 美化) -------------------------
 def apply_dark_tech_theme(app: QApplication):
     # 仍然用 Fusion 样式，但颜色改成蓝灰科技风，避免纯黑带来的压抑感
     app.setStyle("Fusion")
-    base_font = QFont("Microsoft YaHei", 10)
+    base_font = QFont("Futura", 10)
     app.setFont(base_font)
 
     palette = QPalette()
@@ -478,180 +774,13 @@ def apply_dark_tech_theme(app: QApplication):
 
     app.setPalette(palette)
 
-    # 统一控件样式
-    app.setStyleSheet("""
-        QWidget {
-            background-color: #0b1120;
-            color: #e5f2ff;
-            font-family: "Microsoft YaHei";
-            font-size: 20px;
-        }
-
-        QGroupBox {
-            border: 1px solid #1e293b;
-            border-radius: 8px;
-            margin-top: 12px;
-            padding-top: 10px;
-            font-size: 20px;
-        }
-
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 6px;
-            color: #38bdf8;           /* 标题高亮蓝 */
-            font-weight: 600;
-            font-size: 20px;
-        }
-
-        QPushButton {
-            border: 1px solid #38bdf8;
-            border-radius: 4px;
-            padding: 4px 10px;
-            background-color: #1f2937; /* 比背景略亮一点 */
-            font-size: 20px;
-        }
-        QPushButton:hover {
-            background-color: #1e293b;
-        }
-        QPushButton:pressed {
-            background-color: #0ea5e9;
-        }
-        QPushButton:disabled {
-            border-color: #475569;
-            color: #64748b;
-        }
-
-        QLineEdit, QTextEdit, QSpinBox {
-            background-color: #111827;
-            border: 1px solid #1e293b;
-            border-radius: 4px;
-            padding: 2px 4px;
-            font-size: 20px;
-        }
-
-        QLineEdit:focus, QTextEdit:focus, QSpinBox:focus {
-            border: 1px solid #38bdf8;
-        }
-
-        QListWidget, QProgressBar {
-            background-color: #020617;
-            border: 1px solid #1e293b;
-            border-radius: 4px;
-            font-size: 20px;
-        }
-
-        QProgressBar::chunk {
-            background-color: #22d3ee;
-        }
-    """)
-
-def apply_light_tech_theme(app: QApplication):
-    app.setStyle("Fusion")
-    base_font = QFont("Microsoft YaHei", 10)
-    app.setFont(base_font)
-
-    palette = QPalette()
-
-    # 整体背景：很浅的蓝灰，干净不刺眼
-    palette.setColor(QPalette.Window, QColor("#e5f0ff"))        # 主背景
-    palette.setColor(QPalette.AlternateBase, QColor("#dde7ff")) # 表格交替色
-
-    # 内容区 / 输入区：略深一点形成卡片效果
-    palette.setColor(QPalette.Base, QColor("#f3f6ff"))          # 文本输入背景
-    palette.setColor(QPalette.Button, QColor("#e0ebff"))        # 按钮背景
-
-    # 文本颜色：深灰蓝，可读性好
-    palette.setColor(QPalette.WindowText, QColor("#0f172a"))
-    palette.setColor(QPalette.Text, QColor("#0f172a"))
-    palette.setColor(QPalette.ButtonText, QColor("#0f172a"))
-    palette.setColor(QPalette.ToolTipBase, QColor("#0f172a"))
-    palette.setColor(QPalette.ToolTipText, QColor("#e5f0ff"))
-
-    # 高亮：偏亮的科技蓝
-    palette.setColor(QPalette.Highlight, QColor("#0ea5e9"))
-    palette.setColor(QPalette.HighlightedText, QColor("#f9fafb"))
-
-    palette.setColor(QPalette.BrightText, QColor("#dc2626"))    # 错误用红色更明显
-
-    app.setPalette(palette)
-
-    app.setStyleSheet("""
-        QWidget {
-            background-color: #e5f0ff;
-            color: #0f172a;
-            font-family: "Microsoft YaHei";
-            font-size: 10pt;
-        }
-
-        QGroupBox {
-            border: 1px solid #bfdbfe;
-            border-radius: 8px;
-            margin-top: 12px;
-            padding-top: 10px;
-            font-size: 10pt;
-            background-color: #f3f6ff;
-        }
-
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 6px;
-            color: #2563eb;       /* 标题蓝 */
-            font-weight: 600;
-        }
-
-        QPushButton {
-            border: 1px solid #2563eb;
-            border-radius: 4px;
-            padding: 4px 10px;
-            background-color: #e0ebff;
-            font-size: 10pt;
-        }
-        QPushButton:hover {
-            background-color: #d0e2ff;
-        }
-        QPushButton:pressed {
-            background-color: #60a5fa;
-        }
-        QPushButton:disabled {
-            border-color: #cbd5e1;
-            color: #94a3b8;
-            background-color: #e5e7eb;
-        }
-
-        QLineEdit, QTextEdit, QSpinBox {
-            background-color: #ffffff;
-            border: 1px solid #cbd5e1;
-            border-radius: 4px;
-            padding: 2px 4px;
-            font-size: 10pt;
-        }
-
-        QLineEdit:focus, QTextEdit:focus, QSpinBox:focus {
-            border: 1px solid #2563eb;
-        }
-
-        QListWidget, QProgressBar {
-            background-color: #f3f6ff;
-            border: 1px solid #cbd5e1;
-            border-radius: 4px;
-            font-size: 10pt;
-        }
-
-        QProgressBar::chunk {
-            background-color: #0ea5e9;
-        }
-    """)
+    # 使用统一的 QSS 构建函数美化深色主题
+    app.setStyleSheet(build_common_qss())
 
 
 def main():
     app = QApplication(sys.argv)
-    # 根据配置开关选择主题
-    if THEME_MODE == "light":
-        apply_light_tech_theme(app)
-    else:
-        apply_dark_tech_theme(app)
+    apply_dark_tech_theme(app)
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
